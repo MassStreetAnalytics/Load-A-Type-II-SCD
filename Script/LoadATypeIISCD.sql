@@ -9,16 +9,18 @@
 
 BEGIN TRANSACTION
 
+--Begin by clearing your work area.
 IF OBJECT_ID('DimTickers') IS NOT NULL DROP TABLE DimTickers
 IF OBJECT_ID('tempdb..#DimTickers') IS NOT NULL DROP TABLE #DimTickers
 IF OBJECT_ID('DimTickersCM') IS NOT NULL DROP TABLE DimTickersCM
 IF OBJECT_ID('TickersStage') IS NOT NULL DROP TABLE TickersStage
 
+--Set up date variables.
 --Every organization should have an arbitrary high and low date
 DECLARE @LowDate AS DATETIME = '19000101'
 DECLARE @HighDate AS DATETIME = '99991231'
 
-
+--Now create all the tables we will need.
 --Create our stage table
 CREATE TABLE [TickersStage](
 [ETLKey] [uniqueidentifier] NOT NULL,
@@ -39,6 +41,8 @@ CREATE TABLE [TickersStage](
 ALTER TABLE [TickersStage] ADD  CONSTRAINT [DF_DimTickersCM_ETLKey]  DEFAULT (newid()) FOR [ETLKey]
 
 --Let's create our warehouse table.
+--In the real world, this table would have a FK constraint
+--as it is the parent to a fact table.
 CREATE TABLE [DimTickers](
 [TickersCK] [bigint] IDENTITY(1,1) NOT NULL,
 [Symbol] [nvarchar](50) NULL,
@@ -97,7 +101,9 @@ CREATE TABLE #DimTickers(
 
 
 
---Let's insert some data into staging
+--Now we will insert our initial load. 
+--Funny enough, I actually did find an error in my production data. 
+--We will use that as an example of something messed up.
 INSERT INTO TickersStage([Symbol],[CompanyName],[SourceSystem],[ErrorRecord],[Processed],[RunDate])
 SELECT 'AAPL','Apple Inc','Yahoo',0,0,CURRENT_TIMESTAMP
 UNION
@@ -106,8 +112,8 @@ UNION
 SELECT 'ACN','Accenture Plc','Yahoo',0,0,CURRENT_TIMESTAMP
 
 
---Warehouse load begins here
---Move data from staging to common model
+--Now we will begin the process of actually loading the warehouse.
+--Move data from staging to common model.
 TRUNCATE TABLE DimTickersCM
 
 INSERT INTO DimTickersCM(
@@ -162,7 +168,7 @@ SYSTEM_USER,
 CURRENT_TIMESTAMP
 );
 
---Let's check prod and see that it loaded ok.
+--Let’s check our work so far. You should get three records in DimTickers.
 SELECT * FROM DimTickers
 
 
@@ -173,6 +179,7 @@ TRUNCATE TABLE TickersStage
 INSERT INTO TickersStage([Symbol],[CompanyName],[SourceSystem],[ErrorRecord],[Processed],[RunDate])
 SELECT 'UMBF','UMB Financial Corp','Yahoo',0,0,CURRENT_TIMESTAMP --Let's fix the company name so it's correct
 
+--Now to fix things.
 TRUNCATE TABLE DimTickersCM
 
 INSERT INTO DimTickersCM(
@@ -193,10 +200,13 @@ AND ErrorRecord = 0
 
 
 --Handle changed records
---Here is where it gets crazy
---We have to put the results of the output
---of the merge into a temp table
---which we'll later flush to prod
+
+--Here is where things start to differ
+--We are going to use a MERGE like normal, 
+--but we are going to add an OUTPUT statement 
+--and dump the results to a temporary table 
+--that has no foreign key constraint
+--which we'll later flush to prod.
 INSERT INTO #DimTickers(
 [Symbol],
 [CompanyName],
@@ -255,7 +265,7 @@ CURRENT_TIMESTAMP AS CreatedOn
 WHERE MERGE_OUT.Action_Out = 'UPDATE'
 ;
 
---Flush the temp table to prod
+--Now we flush the data in the temp table into prod.
 INSERT INTO DimTickers(
 [Symbol],
 [CompanyName],
@@ -280,11 +290,12 @@ CreatedOn
 FROM #DimTickers
 
 
---Now let's see the results of our work
+--Go check DimTickers again. You should have four records now - three original and one extra for UMB. 
 SELECT * FROM DimTickers ORDER BY Symbol, EffectiveTo 
 
 COMMIT TRANSACTION
 
+--Do not forget to clean up your environment.
 DROP TABLE DimTickers
 DROP TABLE DimTickersCM
 DROP TABLE #DimTickers
